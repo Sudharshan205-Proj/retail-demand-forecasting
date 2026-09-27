@@ -2,6 +2,7 @@
 
 **Data Science Internship Project — Codec Technologies**
 
+| | |
 |---|---|
 | **Dataset** | [Store Sales — Time Series Forecasting (Corporación Favorita)](https://www.kaggle.com/competitions/store-sales-time-series-forecasting) (Kaggle) |
 | **Notebook** | `retail-demand-forecasting.ipynb` |
@@ -66,6 +67,7 @@ Beyond the headline number, the project is built to be a complete, reproducible,
 
 Inventory decisions rest on a forecast: understocking a fast-moving family costs sales, and overstocking a slow-moving one ties up capital and shelf space. The goal of this project was to build a forecaster useful to an inventory-planning team — one that is accurate and, just as importantly, not systematically biased in either direction.
 
+| | |
 |---|---|
 | **Business task** | Forecast daily unit sales for each store × product-family combination over the next 15 days, to support inventory replenishment decisions. |
 | **Stakeholder** | An inventory-planning team. The forecaster isn't the decision-maker — the point is an unbiased, useful forecast planners can act on, not a number tuned to look good on one metric. |

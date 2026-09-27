@@ -47,6 +47,7 @@ A demand-forecasting pipeline built on [Store Sales — Time Series Forecasting]
 
 That is the original brief for this internship project. Everything else in this repository — the 9-experiment comparison matrix spanning classical, global-ML and deep-learning tracks, the leakage-safe lag/rolling feature engineering, the fair WAPE-optimized final-model selection among deployable global models, and the interactive demo — is this brief carried out end-to-end on a real ~3-million-row, 1,782-series dataset, following the same six-phase analysis cycle used in the internship's [Fraud Detection System](../fraud-detection-system) project and its foundational coursework (see below).
 
+| | |
 |---|---|
 | **Task** | Multi-series regression — forecast daily unit sales per store × product-family combination, 15 days ahead |
 | **Dataset** | Store Sales (Corporación Favorita), 3,000,888 training rows, 1,782 store × family series across 54 stores and 33 product families |
