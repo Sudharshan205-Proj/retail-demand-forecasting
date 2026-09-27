@@ -870,7 +870,7 @@ row = {
     "onpromotion": onpromotion,
     "any_promotion": int(onpromotion > 0),
     "is_holiday": int(is_holiday),
-    "cluster": cluster,                       # looked up from data/stores.csv by store_nbr
+    "cluster": cluster,                       # entered directly on the form
     "sales_lag_7": sales_lag_7,
     "sales_lag_14": sales_lag_14,
     "sales_lag_28": sales_lag_28,
@@ -892,7 +892,7 @@ forecast = model.predict(input_df)[0]
 Two implementation details worth calling out:
 
 1. **Feature re-derivation, not re-use.** The app can't import the notebook's per-series groupby feature-engineering code directly (there's no live database of every series' recent history to query), so it re-implements the same formulas by hand, asking the user directly for the handful of numbers those features are computed from: sales 7/14/28 days ago, and the 7-/28-day rolling mean and 7-day rolling standard deviation of recent sales. This is a deliberate simplification, not a silent gap — the same tradeoff the fraud-detection project's demo made by defaulting velocity features to zero.
-2. **Store metadata (`cluster`, `type`) is looked up from `data/stores.csv`** by the selected `store_nbr`, rather than hardcoded — so the demo requires the dataset to be present locally (Setup), same as the notebook itself.
+2. **Store metadata (`cluster`, `type`) is entered directly on the form** rather than looked up from `data/stores.csv` by `store_nbr`. `stores.csv` lives under the gitignored `data/` directory (Repository Structure), so a copy of it isn't guaranteed to exist wherever the app is deployed (e.g., Streamlit Community Cloud pulling straight from GitHub); asking for cluster/type directly keeps the demo self-contained, needing only the two files under `models/`.
 
 `@st.cache_resource` ensures the model and feature list are loaded from disk once per session, and a `try/except FileNotFoundError` around the load gives a clear, actionable error message (pointing back at the notebook) if the app is launched before the model artifacts exist.
 

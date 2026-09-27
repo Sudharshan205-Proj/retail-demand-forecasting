@@ -445,11 +445,11 @@ Open `retail-demand-forecasting.ipynb`, update `DATA_DIR` if your folder differs
 Prefer not to install Jupyter first? Open the rendered export in `exports/` in any browser to see the fully executed notebook, outputs and all.
 
 **Try the interactive demo**
-Once the notebook has run at least once (so `models/final_model.joblib` exists) and `data/stores.csv` is present:
+Once the notebook has run at least once (so `models/final_model.joblib` exists):
 ```bash
 streamlit run streamlit_app.py
 ```
-Pick a store and product family, enter recent sales history and promotion/holiday details, and get a live 1-day-ahead demand forecast. Note that lag and rolling-window features are entered directly rather than looked up live — see the report's Limitations section.
+Pick a product family, store type, and cluster, enter recent sales history and promotion/holiday details, and get a live 1-day-ahead demand forecast. The demo needs no local copy of `data/` to run — store type/cluster are entered directly rather than looked up from `stores.csv` — and lag/rolling-window features are likewise entered directly rather than looked up live; see the report's Limitations section.
 
 ## Results at a Glance
 

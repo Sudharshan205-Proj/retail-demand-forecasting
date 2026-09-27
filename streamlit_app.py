@@ -16,7 +16,6 @@ st.set_page_config(page_title="Retail Demand Forecasting Demo",
 
 MODEL_PATH = "models/final_model.joblib"
 FEATURE_COLS_PATH = "models/feature_cols.joblib"
-STORES_PATH = "data/stores.csv"
 
 FAMILIES = [
     "AUTOMOTIVE", "BABY CARE", "BEAUTY", "BEVERAGES", "BOOKS", "BREAD/BAKERY",
@@ -37,12 +36,6 @@ def load_artifacts():
     return model, feature_cols
 
 
-@st.cache_data
-def load_store_metadata():
-    stores = pd.read_csv(STORES_PATH, dtype={"store_nbr": "int16", "cluster": "int16"})
-    return stores.set_index("store_nbr")[["city", "state", "type", "cluster"]]
-
-
 st.title("📦 Retail Demand Forecasting — Live Sales Forecast")
 st.caption(
     "Pick a store and product family, enter recent sales history and promotion/holiday "
@@ -60,23 +53,14 @@ except FileNotFoundError:
     )
     st.stop()
 
-try:
-    store_metadata = load_store_metadata()
-except FileNotFoundError:
-    st.error(
-        "`data/stores.csv` not found. Download the Store Sales dataset into `data/` "
-        "(see the README's Setup section) — the demo looks up each store's cluster "
-        "and type from this file, the same way the notebook does."
-    )
-    st.stop()
-
 with st.form("forecast_form"):
     st.subheader("Store & product")
     col1, col2 = st.columns(2)
 
     with col1:
-        store_nbr = st.selectbox("Store number", options=sorted(store_metadata.index.tolist()))
         family = st.selectbox("Product family", options=FAMILIES)
+        store_type = st.selectbox("Store type", options=STORE_TYPES, index=3)
+        cluster = st.number_input("Store cluster (1-17)", min_value=1, max_value=17, value=1, step=1)
 
     with col2:
         forecast_date = st.date_input("Forecast date", value=dt.date.today())
@@ -124,11 +108,9 @@ with st.form("forecast_form"):
 if submitted:
     # Re-derive exactly the same engineered features the notebook computes,
     # from the recent-history and calendar fields a user can plausibly supply
-    # for a single store x family x date forecast.
-    store_row = store_metadata.loc[store_nbr]
-    cluster = int(store_row["cluster"])
-    store_type = str(store_row["type"])
-
+    # for a single store x family x date forecast. Cluster and store type are
+    # taken directly from the form rather than looked up from stores.csv, so
+    # this demo needs no local copy of the dataset to run.
     dayofweek = forecast_date.weekday()
     month = forecast_date.month
     day = forecast_date.day
