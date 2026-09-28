@@ -11,6 +11,8 @@
 
 ---
 
+---
+
 ## Table of Contents
 
 1. [Executive Summary](#1-executive-summary)
@@ -42,12 +44,12 @@
 
 This project builds and compares **nine demand-forecasting modeling approaches** on the Store Sales dataset — a ~3-million-row, 1,782-series retail dataset from a 54-store Ecuadorian grocery chain — and selects a final model through a **fair comparison restricted to models with full-test-set predictions to actually deploy**, rather than by assuming the most complex model wins.
 
-The selected model — **global XGBoost, untuned**, trained on lag/calendar/promotion/holiday features across all 1,782 series — achieves a **WAPE of 12.20%** and **RMSE of 189.65** on a held-out 15-day test window, exceeding the project's own success criterion (WAPE ≤ 15%) by a wide margin and beating the naive-baseline RMSE by more than an order of magnitude.
+The selected model — **global XGBoost, untuned**, trained on lag/calendar/promotion/holiday features across all 1,782 series — achieves a **WAPE of 12.79%** and **RMSE of 196.54** on a held-out 15-day test window, forecasting one day ahead from actuals through the previous day. It meets both Ask-phase criteria: WAPE ≤ 15%, and RMSE below the naive baseline for 28 of 33 product families (84.8%; the naive baseline's own WAPE on the same full test set is 23.30%).
 
 Beyond the headline number, the project is built to be a complete, reproducible, end-to-end system:
 
 - A **leakage-safe lag/rolling feature pipeline**, computed per store × family series so no series' history leaks into another's (Section 8).
-- A **three-track comparison** of classical per-series models (ARIMA, Prophet), a global machine-learning track (Random Forest, XGBoost), and a global deep-learning track (LSTM with store/family embeddings), satisfying the brief's "ARIMA, Prophet, or LSTM" guideline by trying all three and comparing them empirically (Section 11).
+- A **three-track comparison** of classical per-series models (ARIMA, Prophet), a global machine-learning track (Random Forest, XGBoost), and a global deep-learning track (LSTM with store/family embeddings), satisfying the brief's "ARIMA, Prophet, or LSTM" guideline by trying all three and comparing them empirically (Section 11). The LSTM run did not train successfully and is excluded from the conclusions (Sections 11.5 and 15.1).
 - A full **metric suite** (RMSE, MAPE, WAPE, forecast bias) reported for every experiment, with MAPE deliberately excluded as the deciding metric (Section 13).
 - A **feature-importance layer** so every forecast can be explained in terms of which lag, calendar, or exogenous signal drove it (Section 17).
 - A working **Streamlit demo** for interactive, single-series forecasting (Section 19).
@@ -58,7 +60,7 @@ Beyond the headline number, the project is built to be a complete, reproducible,
 | Series count | 1,782 (54 stores × 33 product families) |
 | Experiments run | 9 (2 baselines + 2 classical + 4 global ML + 1 deep learning) |
 | Final model | XGBoost, global, untuned, `n_estimators=400, max_depth=8, learning_rate=0.05` |
-| Final RMSE / WAPE | 189.65 / 12.20% |
+| Final RMSE / WAPE (full test set) | 196.54 / 12.79% |
 | Figures generated | 18 (`assets/01`–`18`) |
 
 ---
@@ -69,9 +71,11 @@ Inventory decisions rest on a forecast: understocking a fast-moving family costs
 
 | | |
 |---|---|
-| **Business task** | Forecast daily unit sales for each store × product-family combination over the next 15 days, to support inventory replenishment decisions. |
+| **Business task** | Forecast daily unit sales for each store × product-family combination, one day ahead, evaluated over a 15-day held-out window (each day is forecast from actuals through the previous day), to support inventory replenishment decisions. |
 | **Stakeholder** | An inventory-planning team. The forecaster isn't the decision-maker — the point is an unbiased, useful forecast planners can act on, not a number tuned to look good on one metric. |
 | **Success criteria (SMART)** | Achieve a company-wide **WAPE ≤ 15%** and **RMSE below the naive-baseline RMSE** on the held-out 15-day test window, for at least 80% of product families. |
+
+**Scope note.** The original brief speaks of a 15-day horizon. The global models here use lag/rolling features built from actuals up to the previous day, so they are one-step-ahead forecasters; ARIMA and Prophet, by contrast, forecast the whole window from a single origin (multi-step) and are therefore not like-for-like with them. A true 15-day-ahead evaluation would need horizon-safe features (lags of 15+ days, or recursive forecasting) and is not done here.
 
 Framing the task this way early — before touching any code — is itself part of the six-phase discipline described next: it fixes the metrics and the "unbiased forecast, not an impressive-looking one" framing *before* a single model is trained, which is what keeps Section 16's model selection honest rather than retrofitted to whatever result looked best.
 
@@ -196,7 +200,7 @@ flowchart TD
 | **Persistence** | `joblib` | Saving the trained model and feature list |
 | **Version control** | Git + GitHub | Source control and portfolio hosting |
 
-Exact pinned versions for every one of these packages are in [`requirements.txt`](./requirements.txt), generated directly from the working environment via `pip freeze` so the project is reproducible on another machine.
+The full environment is pinned in [`requirements-dev.txt`](./requirements-dev.txt) (generated from the working environment via `pip freeze`, so the project is reproducible on another machine); [`requirements.txt`](./requirements.txt) is a slim subset covering only what the Streamlit demo needs.
 
 ### Tools Mapped to Each Phase
 
@@ -316,7 +320,7 @@ Of 350 holiday/event rows, 12 carry `transferred=True` and are excluded from the
 | Missing oil-price days | Reindex against full date range | 31.1% | Interpolated, then forward/back-filled |
 | Transferred-holiday rows | `transferred` flag + `type` check | 12 rows resolved | Excluded from their listed date, moved logically to their actual date |
 | Series completeness | `groupby` + date-count vs. expected range | 100% of 1,782 series incomplete (mean 4 missing days) | Left as-is — not assumed to be zero-sales |
-| Missing daily transaction counts (after merge) | Per-store median fill | — | Filled with each store's own median transaction count |
+| Missing previous-day transaction counts (after merge) | Per-store median fill | — | Filled with each store's own median transaction count, computed on pre-validation dates only |
 
 ---
 
@@ -460,13 +464,20 @@ data = data.merge(oil_filled, on="date", how="left")
 
 data["is_holiday"] = data["date"].isin(holiday_dates).astype("int8")
 
-data = data.merge(transactions, on=["date", "store_nbr"], how="left")
-data["transactions"] = data.groupby("store_nbr", observed=True)["transactions"].transform(
-    lambda s: s.fillna(s.median())
-)
+# Previous-day transactions: same-day traffic isn't known at forecast time (and test.csv has no
+# transactions), so the feature is each store's transaction count from the day before.
+transactions_lag1 = transactions.assign(date=transactions["date"] + pd.Timedelta(days=1))
+transactions_lag1 = transactions_lag1.rename(columns={"transactions": "transactions_lag_1"})
+data = data.merge(transactions_lag1, on=["date", "store_nbr"], how="left")
+
+# Fill gaps with each store's own median, computed on pre-validation dates only (no look-ahead).
+fill_cutoff = train["date"].max() - pd.Timedelta(days=29)   # = validation start
+store_median = transactions[transactions["date"] < fill_cutoff].groupby("store_nbr")["transactions"].median()
+data["transactions_lag_1"] = data["transactions_lag_1"].fillna(data["store_nbr"].map(store_median))
+data["transactions_lag_1"] = data["transactions_lag_1"].fillna(transactions["transactions"].median())
 ```
 
-Missing per-store transaction counts (from the left join) are filled with that **store's own median** — a store-specific fill, not a global one, so a small store's typical traffic isn't inflated toward a large store's.
+The traffic feature is the store's **previous-day** transaction count, because same-day transactions are not known at forecast time. Gaps are filled with that **store's own median** (computed on pre-validation dates only) — a store-specific fill, not a global one, so a small store's typical traffic isn't inflated toward a large store's.
 
 ### 8.2 Lag, Rolling, and Calendar Features
 
@@ -498,7 +509,7 @@ data["oil_price_change"] = data["oil_price"].diff().fillna(0)
 
 before = len(data)
 data = data.dropna(subset=["sales_lag_28"]).reset_index(drop=True)
-# Dropped 261,690 warm-up rows; 2,739,198 rows remain.
+# Dropped 49,896 warm-up rows; 2,950,992 rows remain.
 ```
 
 Every lag/rolling feature is computed **within each `store_nbr` × `family` group** — grouping before shifting/rolling is what prevents one series' history from leaking into another's. Rolling statistics are computed on **already-shifted** (lag-1) sales, so a day's own sales value never leaks into its own rolling window. The warm-up rows at the start of each series, where `sales_lag_28` isn't yet available, are dropped rather than filled.
@@ -519,14 +530,14 @@ data = pd.get_dummies(data, columns=["family", "type"], prefix=["family", "store
 | 2 | `any_promotion` | Binary | Whether the row has any promotion at all |
 | 3 | `is_holiday` | Binary | Transferred-flag-resolved national holiday/non-working day |
 | 4 | `cluster` | Numeric | Store grouping (1 of 17) |
-| 5–7 | `sales_lag_7/14/28` | Numeric | Sales exactly 1/2/4 weeks ago, same series |
+| 5–7 | `sales_lag_7/14/28` | Numeric | Sales 7/14/28 rows (≈1/2/4 weeks) ago, same series — row-based, so the offset is one calendar day longer across each missing 25-Dec |
 | 8–9 | `rolling_mean_7/28` | Numeric | Recent average sales level, same series |
 | 10 | `rolling_std_7` | Numeric | Recent sales volatility, same series |
 | 11 | `dayofweek` | Numeric | Day-of-week seasonality |
 | 12 | `month` | Numeric | Month-of-year seasonality |
 | 13 | `day` | Numeric | Day-of-month |
 | 14 | `is_weekend` | Binary | Weekend flag |
-| 15 | `transactions` | Numeric | Store-level daily traffic proxy |
+| 15 | `transactions_lag_1` | Numeric | Store-level traffic proxy — the previous day's transaction count (same-day counts aren't known at forecast time) |
 | 16–48 | `family_*` | Binary (33 columns) | Product-family one-hot |
 | 49–53 | `store_type_*` | Binary (5 columns) | Store-type one-hot |
 | *(oil-ablation only)* | `oil_price`, `oil_price_change` | Numeric | Macroeconomic level and momentum — Experiment 6 only |
@@ -554,7 +565,7 @@ test_df = data[data["date"] >= test_start]
 | Validation | 2017-07-17 to 2017-07-31 | 26,730 |
 | Test | 2017-08-01 to 2017-08-15 | 26,730 |
 
-The split is **strictly chronological** — training only ever contains dates before validation, which only contains dates before test. This is never a random shuffle: shuffling a time series before splitting would let future sales values leak into training via the lag/rolling features, silently inflating every reported metric. The 15-day test window exactly matches the business task's forecast horizon and the Kaggle competition's own `test.csv` window.
+The split is **strictly chronological** — training only ever contains dates before validation, which only contains dates before test. This is never a random shuffle: shuffling a time series before splitting would let future sales values leak into training via the lag/rolling features, silently inflating every reported metric. The 15-day window is the held-out evaluation period; note that the Kaggle competition's own `test.csv` window is 16 days (2017-08-16 to 2017-08-31), a different range. Because the lag/rolling features use actuals through the previous day, each day in the window is a one-day-ahead forecast rather than a 15-day-ahead one (Section 2).
 
 ---
 
@@ -568,7 +579,7 @@ The project guideline to "use historical sales data, promotions, holidays, etc."
 | **Holidays** (`holidays_events.csv`) | Transferred-flag correctly resolved (Section 6.2); National-level only, applied uniformly | A "free," reliable signal — holiday dates are known in advance for the whole forecast horizon |
 | **Oil price** (`oil.csv`) | Interpolated across the 31.1% missing days, then forward/back-filled; level and day-over-day change both computed | Treated as a **secondary, ablation-only** feature (Experiment 6) given its expected weak signal at the individual store × family level |
 
-Consistent with the project plan's own expectation, oil price turned out to be a genuinely weak signal at this granularity: adding it to XGBoost's feature set made WAPE *worse* (13.14% vs. 12.20% without it, Section 15) rather than better — a result that argues for keeping it out of the deployed model rather than for expanding its role.
+Consistent with the project plan's own expectation, oil price turned out to be a genuinely weak signal at this granularity: adding it to XGBoost's feature set made WAPE *worse* (14.08% vs. 12.79% without it, Section 15) rather than better — a result that argues for keeping it out of the deployed model rather than for expanding its role.
 
 ---
 
@@ -593,6 +604,8 @@ model = SARIMAX(
     enforce_stationarity=False, enforce_invertibility=False,
 )
 ```
+
+The forecast is generated from the end of the training block (the day before the validation window), so it runs 30 steps ahead; the first 15 steps fall in the validation window and are discarded, and only the last 15 (the test window) are scored.
 
 Plain ARIMA has no built-in seasonal term, so a `seasonal_order` with weekly periodicity (`s=7`) is added directly rather than manually de-seasonalizing first. Fit **one series at a time** — impractical across all 1,782 series in a first pass, so restricted to the 5 highest-volume representative series (Experiment 2).
 
@@ -624,7 +637,9 @@ lstm_out = layers.LSTM(32)(seq_input)
 combined = layers.Concatenate()([lstm_out, store_emb, family_emb])
 ```
 
-A single global LSTM learns a dense embedding per store and per family alongside a 28-day lookback sequence of past sales, letting one network specialize its predictions per series without training 1,782 separate models. Built from a **50-series sample** rather than all 1,782 to keep training time reasonable for a first pass — the same code scales to the full set by widening `N_SAMPLE_SERIES` (Experiment 7).
+A single global LSTM learns a dense embedding per store and per family alongside a 28-day lookback sequence of past sales, letting one network specialize its predictions per series without training 1,782 separate models. Built from a **50-series sample** rather than all 1,782 to keep training time reasonable for a first pass — the same code scales to the full set by widening `N_SAMPLE_SERIES` (Experiment 7). The 5 representative series are always included in the sample so the LSTM is scored on the same rows as every other experiment (its score on the full 50-series sample is printed for reference only).
+
+**Outcome: this run did not train successfully.** It scores WAPE 90.38% with bias −90.38% on the 5 series (82.09% / −79.61% on the full 50-series sample), i.e. it predicts only about a tenth of actual sales. Sales are fed to the network unscaled (the first-epoch training loss is ≈ 10.4 million), Keras' `validation_split` holds out the last 10% of the concatenated training sequences (i.e. the last series), not a later period, and early stopping therefore restored the epoch-1 weights: validation loss was best at epoch 1 (28,735) and had risen to 199,299 by epoch 4. The row is kept in Table 15.1 for transparency but is excluded from every conclusion; the result says nothing about how a properly scaled, time-validated LSTM would perform.
 
 ### 11.6 Why Both a Global and a Per-Series Track
 
@@ -643,19 +658,25 @@ param_dist = {
     "colsample_bytree": [0.7, 0.8, 0.9, 1.0],
 }
 
+# TimeSeriesSplit splits by row position, and the training frame is ordered by store x family x date,
+# so sort by date first - otherwise the "time" folds would be blocks of stores, not blocks of time.
+date_order = train_df["date"].sort_values(kind="stable").index
+X_train_sorted, y_train_sorted = X_train_full.loc[date_order], y_train_full.loc[date_order]
+
 tscv = TimeSeriesSplit(n_splits=3)
 search = RandomizedSearchCV(
     xgb.XGBRegressor(random_state=RANDOM_STATE, n_jobs=-1),
     param_distributions=param_dist, n_iter=15, scoring="neg_root_mean_squared_error",
     cv=tscv, random_state=RANDOM_STATE, n_jobs=-1, verbose=1,
 )
+search.fit(X_train_sorted, y_train_sorted)
 ```
 
-`TimeSeriesSplit` gives **rolling-origin** folds — never a random k-fold shuffle — so each fold trains on an earlier block and validates on the block immediately after it, respecting the same never-shuffle rule as the train/val/test split itself.
+`TimeSeriesSplit` gives **rolling-origin** folds — never a random k-fold shuffle — so each fold trains on an earlier block and validates on the block immediately after it, respecting the same never-shuffle rule as the train/val/test split itself. This only holds because the rows are sorted by date first (see the code above).
 
-**Best params found:** `subsample=1.0, n_estimators=500, max_depth=8, learning_rate=0.01, colsample_bytree=0.7`.
+**Best params found:** `subsample=1.0, n_estimators=500, max_depth=8, learning_rate=0.01, colsample_bytree=0.7` — identical to the earlier run that used store-blocked folds.
 
-**Result:** the tuned model's WAPE (13.76%) is *worse* than the untuned XGBoost's (12.20%, Experiment 5). This is reported as a genuine finding rather than hidden: `RandomizedSearchCV` optimized for RMSE on rolling-origin CV folds during the search, which doesn't necessarily track WAPE on this specific 15-day holdout — a reminder, echoed from the fraud-detection project's own final-selection logic, that a tuned model isn't automatically the better choice (Section 16).
+**Result:** on the full test set the tuned model's WAPE (14.26%) is *worse* than the untuned XGBoost's (12.79%, Experiment 5), and it is also worse on the 5-series subset (8.36% vs. 6.83%). The conclusion is unchanged by correcting the CV folds to split by date. One possible reason is that `RandomizedSearchCV` optimizes RMSE, which need not track WAPE on this 15-day holdout — a possibility, not a demonstrated cause — and a reminder that a tuned model isn't automatically the better choice (Section 16).
 
 ---
 
@@ -664,11 +685,11 @@ search = RandomizedSearchCV(
 | Metric | Definition | Why It Matters Here | Caveat |
 |---|---|---|---|
 | **RMSE** | √(mean squared error) | Named in the guidelines; the standard headline metric, penalizes large promotion-day spikes heavily | Not comparable across product families with very different volumes without normalizing per series |
-| **MAPE** | mean(\|error\| / \|actual\|) × 100 | Named in the guidelines; intuitive, scale-free percentage | **Structurally unreliable here**: undefined/explodes when actual sales are 0, which is common for slow-moving product families — reported for every experiment but never used to pick the winner |
+| **MAPE** | mean(\|error\| / \|actual\|) × 100 | Named in the guidelines; intuitive, scale-free percentage | **Unreliable here**: undefined when actual sales are 0 (those rows are excluded from the calculation), which is common for slow-moving families, and inflated by low-volume series with small nonzero actuals — reported for every experiment but never used to pick the winner |
 | **WAPE** ⭐ | Σ\|error\| / Σ\|actual\| × 100 | Fixes MAPE's zero-division problem and aggregates cleanly across all 1,782 series into one interpretable percentage — the **primary metric used for model selection** | Still a ratio metric; can behave oddly on very low-volume series unless aggregated sensibly |
 | **Forecast Bias** | (Σpredicted − Σactual) / Σactual × 100 | Directly answers "are we systematically over- or under-stocking?" — the business-facing tie-breaker given the inventory-optimization goal | A single aggregate number can hide series-level errors that cancel out overall |
 
-MAPE is deliberately **not** the deciding metric: on this dataset's many zero-sales days, a model can score an artificially poor (or, in degenerate cases, artificially good) MAPE without that reflecting genuine forecast quality — exactly the critique behind the project's WAPE-first evaluation approach.
+MAPE is deliberately **not** the deciding metric: on this dataset's many zero-sales and low-volume series, a model can score an artificially poor (or, in degenerate cases, artificially good) MAPE without that reflecting genuine forecast quality — exactly the critique behind the project's WAPE-first evaluation approach.
 
 ---
 
@@ -684,13 +705,13 @@ flowchart TD
 
     R --> S --> FE --> SPLIT
 
-    subgraph CLASSICAL["🔵 Classical Track — 5 representative series only"]
+    subgraph CLASSICAL["🔵 Baselines & Classical Track — 5 representative series only"]
+        V1["Naive / seasonal-naive<br/>baseline"]
         U1["ARIMA (SARIMAX)<br/>weekly seasonal"]
         U2["Prophet<br/>+ holiday/promo regressors"]
     end
 
-    subgraph GLOBAL["🟠 Global Track — all 1,782 series, one model"]
-        V1["Naive / seasonal-naive<br/>baseline"]
+    subgraph GLOBAL["🟠 Global Track — one model across series (RF/XGBoost: all 1,782 · LSTM: 50-series sample)"]
         V2["Random Forest"]
         V3["XGBoost<br/>(± oil price)"]
         V4["LSTM<br/>store/family embeddings, 50-series sample"]
@@ -706,7 +727,7 @@ flowchart TD
     TUNE["RandomizedSearchCV<br/>rolling-origin CV on XGBoost"]
     V3 --> TUNE
 
-    EVAL{{"Evaluate ALL 9 candidates<br/>on the SAME 15-day test window"}}
+    EVAL{{"Evaluate ALL 9 candidates on the SAME<br/>5-series subset of the 15-day test window<br/>(+ full test set for the 4 global models)"}}
     U1 --> EVAL
     U2 --> EVAL
     V1 --> EVAL
@@ -732,8 +753,8 @@ flowchart TD
     class R,ART data
     class DEPLOY,EVAL decision
     class S,FE,SPLIT,TUNE,DEMO process
-    class U1,U2 classical
-    class V1,V2,V3,V4 global
+    class V1,U1,U2 classical
+    class V2,V3,V4 global
     class FINAL final
 
     style CLASSICAL fill:#f4f8fd,stroke:#3d6ea8,stroke-width:2px
@@ -741,7 +762,7 @@ flowchart TD
 ```
 
 **Key design choices baked into this workflow:**
-- The 15-day test window is split off chronologically **before** any modeling, so every reported metric reflects a genuine forward forecast, not information leaked from the future.
+- The 15-day test window is split off chronologically **before** any modeling, so no test-window sales enter training. Because the features use actuals through the previous day, the reported forecasts are one-day-ahead (Section 2).
 - Both a per-series classical track and a global ML/deep-learning track are trained, satisfying the guideline's "ARIMA, Prophet, or LSTM" naming by covering all three, plus the practical tree-based approach every reference project actually uses.
 - The final model is chosen only from candidates with **full-test-set predictions to actually deploy** — not by assuming whichever scored best on the smaller representative-series comparison automatically wins if it can't be deployed at scale.
 
@@ -749,40 +770,56 @@ flowchart TD
 
 ## 15. Results — the Full Experiment Matrix
 
-### 15.1 Representative-Series Comparison (all 9 experiments, same 5 series)
+### 15.1 Representative-Series Comparison (all 9 experiments, same 5 series — 75 test rows)
 
-| Experiment | RMSE | MAPE (%) | WAPE (%) | Bias (%) |
+Every experiment is scored on exactly the same 5 store × family series. ARIMA and Prophet forecast the whole window from a single origin (multi-step); the other models use actuals through the previous day (one-step), so the classical rows are not like-for-like with the rest.
+
+| Experiment | RMSE | MAPE () | WAPE () | Bias () |
 |---|---|---|---|---|
-| **5. XGBoost (global, lags+calendar+promo+holiday)** ⭐ | 189.65 | 42.43 | **12.20** | +2.22 |
-| 6. XGBoost + oil price | 202.29 | 41.53 | 13.14 | +3.78 |
-| 8. XGBoost (tuned, global) | 206.37 | 62.04 | 13.76 | +4.10 |
-| 4. Random Forest (global, lags+calendar+promo+holiday) | 229.12 | 42.91 | 14.83 | +4.08 |
 | 1a. Naive (yesterday's value) | 2,063.52 | 16.22 | 15.77 | +1.93 |
-| 3. Prophet (holiday + promotion regressors) | 2,031.17 | 17.07 | 16.49 | +9.56 |
 | 1b. Seasonal-naive (same weekday last week) | 2,503.25 | 21.75 | 21.14 | +8.66 |
-| 2. ARIMA (SARIMAX, weekly seasonal) | 3,227.97 | 27.82 | 25.92 | +12.26 |
-| 7. LSTM (global, store/family embeddings, 50-series sample) | 500.63 | 74.75 | 27.01 | −10.61 |
+| 2. ARIMA (SARIMAX, weekly seasonal) | 2,348.80 | 19.40 | 18.83 | +12.71 |
+| 3. Prophet (holiday + promo regressors) | 2,031.17 | 17.07 | 16.49 | +9.56 |
+| 4. Random Forest (global) | 1,621.30 | 12.27 | 12.15 | +9.07 |
+| **5. XGBoost (global, untuned)** ⭐ | **868.18** | **6.90** | **6.83** | +0.97 |
+| 6. XGBoost + oil price | 1,232.70 | 9.33 | 9.31 | +5.03 |
+| 7. LSTM (50-series sample, scored on the 5 series) — *failed to train* | 9,105.87 | 90.00 | 90.38 | −90.38 |
+| 8. XGBoost (tuned, global) | 1,112.94 | 8.53 | 8.36 | +4.49 |
+
+**Experiment 7 (LSTM) did not train successfully** — see Section 11.5. it predicts only about a tenth of actual sales. Sales were fed to the network unscaled, early stopping restored the epoch-1 weights (validation loss was best at epoch 1, 28,735, and had risen to 199,299 by epoch 4), and the validation split is not time-based. The row is kept for transparency but excluded from every conclusion.
 
 ### 15.2 Global Aggregate Performance (full test set, deployable models only)
 
 | Model | RMSE | WAPE (%) | Bias (%) |
 |---|---|---|---|
-| **XGBoost (global, no oil)** ⭐ | 189.65 | 12.20 | +2.22 |
-| XGBoost (global, + oil) | 202.29 | 13.14 | +3.78 |
-| XGBoost (tuned, global) | 206.37 | 13.76 | +4.10 |
-| Random Forest (global, no oil) | 229.12 | 14.83 | +4.08 |
+| **XGBoost (global, no oil)** ⭐ | 196.54 | 12.79 | +2.77 |
+| XGBoost (global, + oil) | 219.80 | 14.08 | +4.79 |
+| XGBoost (tuned, global) | 216.05 | 14.26 | +4.64 |
+| Random Forest (global, no oil) | 239.00 | 15.20 | +4.86 |
+
+The oil-price and tuned variants are within 0.2 percentage points of each other on WAPE (14.08% vs. 14.26%) and swap order on RMSE (219.80 vs. 216.05), so they should not be ranked against each other; both clearly trail the untuned, no-oil model.
 
 <p align="center">
   <img src="assets/16_model_comparison_bar.png" alt="Model comparison bar chart" width="600">
 </p>
 
-Every RMSE/WAPE value on the full test set (Table 15.2) matches the representative-series comparison (Table 15.1) exactly for the four global models — because the global models' predictions cover the entire test set regardless of which slice is used to score them, unlike the per-series-fit ARIMA/Prophet/LSTM experiments, which only ever produce predictions for their own sampled series.
+### 15.3 Success-Criteria Check (full test set)
+
+The two Ask-phase targets are evaluated for the selected model on the full test set. The naive baseline (yesterday's value) is scored on the same full test set, not the 5-series subset.
+
+| Criterion | Result |
+|---|---|
+| Company-wide WAPE ≤ 15% | **PASS** — 12.79% |
+| Naive (yesterday's value) WAPE on the full test set | 23.30% (selected model: 12.79%) |
+| Families where model RMSE < naive RMSE (target ≥ 80%) | **PASS** — 28 of 33 (84.8%) |
+
+The five families where the naive forecast still has the lower RMSE are SCHOOL AND OFFICE SUPPLIES, GROCERY II, BABY CARE, HOME APPLIANCES and BOOKS (the last three are very low-volume, mostly near-zero series).
 
 ---
 
 ## 16. Final Model Selection
 
-Only Experiments 4, 5, 6, and 8 (Random Forest / XGBoost variants) were trained as a **single global model with predictions across the entire test set** — Experiments 1a/1b (naive baselines), 2 (ARIMA), 3 (Prophet), and 7 (LSTM) were only evaluated on a handful of representative series (Section 11), so there is no full-test-set model behind them to deploy or save. The final model is therefore selected as the **best-by-WAPE experiment among the deployable global models**, not hardcoded to whichever one happened to get tuned last:
+Only Experiments 4, 5, 6, and 8 (Random Forest / XGBoost variants) were trained as a **single global model with predictions across the entire test set** — Experiments 1a/1b (naive baselines), 2 (ARIMA), 3 (Prophet), and 7 (LSTM) were only evaluated on a handful of representative series (Section 11), so there is no full-test-set model behind them to deploy or save. The final model is therefore selected as the **best-by-WAPE experiment among the deployable global models** (ranked on the full test set), not hardcoded to whichever one happened to get tuned last:
 
 ```python
 global_candidates = {
@@ -791,20 +828,25 @@ global_candidates = {
     "6. XGBoost + oil price": (xgb_oil_model, xgb_oil_pred_full),
     "8. XGBoost (tuned, global)": (best_model, best_pred_full),
 }
-deployable_ranked = final_results_df[final_results_df["Experiment"].isin(global_candidates)]
-best_row = deployable_ranked.iloc[0]
+deployable_ranked = global_results_df[global_results_df["Experiment"].isin(global_candidates)]
+best_row = deployable_ranked.iloc[0]   # global_results_df is sorted by full-test-set WAPE
 final_model_name = best_row["Experiment"]
 ```
 
-**Selected: `5. XGBoost (global, lags+calendar+promo+holiday)`** — untuned, `n_estimators=400, max_depth=8, learning_rate=0.05` — WAPE 12.20%, RMSE 189.65.
+**Selected: `5. XGBoost (global, lags+calendar+promo+holiday)`** — untuned, `n_estimators=400, max_depth=8, learning_rate=0.05` — WAPE 12.79%, RMSE 196.54 on the full test set.
 
-This experiment also tops the full representative-series comparison (Table 15.1) — no complexity-vs-deployability tradeoff was needed here, unlike a scenario where the overall best-scoring experiment might have no deployable global model behind it.
+**Selection caveat.** The choice is made on the same 15-day test window the result is reported on (the validation window is not used for selection), so the headline figure is slightly optimistic.
 
-**A genuine, reported finding:** hyperparameter tuning did **not** improve on the untuned model — tuned WAPE (13.76%) is worse than untuned WAPE (12.20%). Likely cause: `RandomizedSearchCV` optimized for RMSE on rolling-origin CV folds (Section 12), which doesn't necessarily track WAPE on this specific 15-day holdout. Both the model-selection logic and this write-up report this plainly rather than assuming "tuned" automatically means "best" — the same discipline the fraud-detection project applied when comparing Random Forest and XGBoost at their own optimal thresholds.
+This experiment also tops the representative-series comparison (Table 15.1: WAPE 6.83% vs. 8.36% for tuned XGBoost, 9.31% with oil and 12.15% for Random Forest), so no complexity-vs-deployability tradeoff was needed.
+
+**A genuine, reported finding:** hyperparameter tuning did **not** improve on the untuned model — tuned WAPE (14.26%) was worse than untuned WAPE (12.79%) on the full test set, and the same held on the 5 series (8.36% vs. 6.83%), even after the CV folds were corrected to split by date. Possible reason: `RandomizedSearchCV` optimized for RMSE on rolling-origin CV folds (Section 12), which doesn't necessarily track WAPE on this specific 15-day holdout. Both the model-selection logic and this write-up report this plainly rather than assuming "tuned" automatically means "best" — the same discipline the fraud-detection project applied when comparing Random Forest and XGBoost at their own optimal thresholds.
 
 ```python
+# Save the feature list that matches the selected model (only Experiment 6 uses the oil columns).
+final_feature_cols = feature_cols_with_oil if final_model_name.startswith("6.") else feature_cols_base
+
 joblib.dump(final_model, "models/final_model.joblib")
-joblib.dump(feature_cols_base, "models/feature_cols.joblib")
+joblib.dump(final_feature_cols, "models/feature_cols.joblib")
 ```
 
 ---
@@ -815,7 +857,9 @@ joblib.dump(feature_cols_base, "models/feature_cols.joblib")
   <img src="assets/18_feature_importance.png" alt="Feature importance" width="600">
 </p>
 
-The final XGBoost model's built-in `.feature_importances_` are plotted as a horizontal bar chart of the top 15 features. Recent sales history (`sales_lag_7`, `rolling_mean_7`, `rolling_mean_28`) and the `family_*` one-hot columns dominate, consistent with Section 7's finding that no single raw exogenous signal correlates strongly with sales on its own — the model's predictive power comes from combining recent-history features with product-family identity, not from any one instantaneous input.
+The final XGBoost model's built-in `.feature_importances_` are plotted as a horizontal bar chart of the top 15 features. One recent-history feature dominates: `rolling_mean_7` (importance ≈ 0.70), followed by `sales_lag_7` (≈ 0.13) and `sales_lag_14` (≈ 0.08–0.09). Everything else — `sales_lag_28` (≈ 0.01), `dayofweek`, `is_holiday`, `onpromotion`, `rolling_mean_28`, `day`, `month`, `rolling_std_7`, and each individual `family_*` column (MEATS, GROCERY I, FROZEN FOODS and PRODUCE make the top 15) — contributes roughly 0.01 or less, and `transactions_lag_1` does not make the top 15. Values are read from the regenerated `assets/18_feature_importance.png`.
+
+The pattern is consistent with Section 7's finding that no single raw exogenous signal correlates strongly with sales on its own: the model's predictive power comes mainly from recent sales history, with calendar, promotion, holiday and product-family identity adding comparatively little individually.
 
 Unlike the fraud-detection project (which used SHAP for a per-prediction beeswarm plot), this project uses the tree model's native feature importances directly — a lighter-weight but still stakeholder-legible way to answer "what is this forecast actually based on?"
 
@@ -826,7 +870,7 @@ Unlike the fraud-detection project (which used SHAP for a per-prediction beeswar
 ```mermaid
 flowchart TD
     N0["Title & Ask<br/>imports, RANDOM_STATE"] --> N1["Prepare<br/>load 6 files, dataset_overview(),<br/>series-completeness checks"]
-    N1 --> N2["EDA<br/>14 plotting functions"]
+    N1 --> N2["EDA<br/>15 plotting functions"]
     N2 --> N3["Process<br/>holiday resolution, merges,<br/>lag/rolling/calendar features"]
     N3 --> N4["Analyze — Baselines & Classical<br/>naive, seasonal-naive, ARIMA, Prophet"]
     N4 --> N5["Analyze — Global ML & Deep Learning<br/>Random Forest, XGBoost x2, LSTM"]
@@ -844,9 +888,9 @@ flowchart TD
 | Prepare | 2–20 | Imports, `RANDOM_STATE`, `dataset_overview()`, `store_network_summary()`, `numeric_summary()`, `categorical_summary()`, series/oil/holiday completeness checks |
 | EDA | 21–42 | `plot_total_sales_over_time()`, `plot_sales_distribution()`, `plot_sales_by_family()`, `plot_sales_by_store_type()`, `plot_oil_price()`, `plot_promotion_effect()`, `plot_holiday_counts()`, `plot_dayofweek_seasonality()`, `plot_monthly_seasonality()`, `plot_sales_by_city()`, `plot_sales_by_cluster()`, `plot_holiday_effect()`, `plot_transactions_vs_sales()`, `plot_raw_correlation_heatmap()`, `plot_missing_days_distribution()` |
 | Process | 43–50 | `build_holiday_flag()`, merges, lag/rolling/calendar feature engineering, one-hot encoding, chronological split |
-| Analyze | 51–77 | `evaluate_forecast()`, `evaluate_global()`, all 9 experiments, `RandomizedSearchCV`, deployable-model final selection, `joblib.dump()` |
-| Share | 78–81 | `plot_model_comparison()`, `plot_actual_vs_predicted()`, `plot_feature_importance()` |
-| Act | 82–84 | Final metrics printout, recommendations, limitations |
+| Analyze | 51–79 | `evaluate_forecast()`, `evaluate_global()`, all 9 experiments, `RandomizedSearchCV`, deployable-model final selection, `joblib.dump()`, success-criteria check (per-family RMSE vs. full-test-set naive) |
+| Share | 80–83 | `plot_model_comparison()`, `plot_actual_vs_predicted()`, `plot_feature_importance()` |
+| Act | 84–86 | Final metrics printout, recommendations, limitations |
 
 Every one of the 18 plotting cells writes its figure straight to `assets/` (via `plt.savefig`) **before** displaying it inline, so re-running the notebook keeps the images backing this report and the README automatically in sync — no manual export step required.
 
@@ -862,7 +906,7 @@ flowchart LR
     RECOMP --> ORDER["Assemble into a single-row<br/>DataFrame, columns in training order"]
     ORDER --> MODEL[("final_model.joblib")]
     MODEL --> SCORE["predict()<br/>→ forecast unit sales"]
-    SCORE --> DISPLAY["Metric + comparison against<br/>recent average"]
+    SCORE --> DISPLAY["Metric + comparison against<br/>same-weekday average"]
 
     style MODEL fill:#4C72B0,color:#fff,stroke:#2c3e5c,stroke-width:2px
 ```
@@ -883,7 +927,7 @@ row = {
     "month": forecast_date.month,
     "day": forecast_date.day,
     "is_weekend": int(forecast_date.weekday() >= 5),
-    "transactions": transactions,
+    "transactions_lag_1": transactions_lag_1,   # store's transaction count yesterday
     f"family_{family}": 1,
     f"store_type_{store_type}": 1,
 }
@@ -891,10 +935,12 @@ input_df = pd.DataFrame([{col: row.get(col, 0) for col in feature_cols}])
 forecast = model.predict(input_df)[0]
 ```
 
-Two implementation details worth calling out:
+Three implementation details worth calling out:
 
 1. **Feature re-derivation, not re-use.** The app can't import the notebook's per-series groupby feature-engineering code directly (there's no live database of every series' recent history to query), so it re-implements the same formulas by hand, asking the user directly for the handful of numbers those features are computed from: sales 7/14/28 days ago, and the 7-/28-day rolling mean and 7-day rolling standard deviation of recent sales. This is a deliberate simplification, not a silent gap — the same tradeoff the fraud-detection project's demo made by defaulting velocity features to zero.
 2. **Store metadata (`cluster`, `type`) is entered directly on the form** rather than looked up from `data/stores.csv` by `store_nbr`. `stores.csv` lives under the gitignored `data/` directory (Repository Structure), so a copy of it isn't guaranteed to exist wherever the app is deployed (e.g., Streamlit Community Cloud pulling straight from GitHub); asking for cluster/type directly keeps the demo self-contained, needing only the two files under `models/`.
+
+3. **Weekday-aware advice, non-negative forecasts, artifact guard.** The stock advice compares the forecast with the same weekday's recent sales (the mean of the lag-7/14/28 inputs, which all fall on the same weekday) rather than the plain 7-/28-day average, so weekend and weekday forecasts aren't misclassified; forecasts are clipped at zero; and if the saved `feature_cols` contain a feature the form doesn't collect (e.g. artifacts from an older run, or the oil-price model), the app stops with an explicit error instead of silently feeding zeros.
 
 `@st.cache_resource` ensures the model and feature list are loaded from disk once per session, and a `try/except FileNotFoundError` around the load gives a clear, actionable error message (pointing back at the notebook) if the app is launched before the model artifacts exist.
 
@@ -932,7 +978,7 @@ All 18 figures live in `assets/` and are generated directly by the notebook.
 ## 21. Recommendations
 
 - Deploy the winning global XGBoost model across all ~1,782 series — it's the only track here actually trained and validated at that full scale, versus ARIMA/Prophet/LSTM, which were only validated on a sample.
-- Use forecast bias **per product family**, not just the aggregate point forecast, to set safety-stock adjustments — a model that's unbiased in aggregate (+2.22% here) can still be badly biased for specific slow-moving families.
+- Use forecast bias **per product family**, not just the aggregate point forecast, to set safety-stock adjustments — a model that's unbiased in aggregate (+2.77% here) can still be badly biased for specific slow-moving families.
 - Report WAPE alongside RMSE for any external-facing summary; drop MAPE as a decision metric — it breaks down on the many zero-sales days in this dataset.
 - Do not assume tuning automatically helps — hyperparameter tuning made this model *worse* by WAPE; always compare a tuned candidate against its untuned baseline before deploying it, exactly as the deployable-model selection logic here does.
 - Treat oil price as an ablation experiment, not a production feature — it measurably hurt WAPE here at the store × family granularity.
@@ -940,10 +986,12 @@ All 18 figures live in `assets/` and are generated directly by the notebook.
 ## 22. Limitations
 
 - **Sales here are realized sales, not true demand** — stockouts can under-report demand on some days, so a model trained on this data may still be blind to how much was actually wanted, not just sold.
-- **Every one of the ~1,782 series has at least one missing calendar day** out of the expected range — gaps were left as-is (no forward-fill/interpolation of missing sales rows) rather than assumed to be zero-sales days, since a missing row and a confirmed zero-sales day are not the same thing and conflating them would bias the lag/rolling features.
-- **Hyperparameter tuning (Experiment 8) did not outperform the untuned XGBoost (Experiment 5)** on this holdout — a reminder that a tuned model isn't automatically the better choice, and that the final-model selection logic in Analyze picks by actual WAPE rather than assuming the more-tuned model wins.
-- **ARIMA, Prophet, and the LSTM were only fit/validated on a sample of series** (5 for the classical models, 50 for the LSTM) rather than the full ~1,782 — a fair comparison at full scale would need to run all of them across every series, out of scope for a first pass given per-series fitting time.
+- **Every one of the ~1,782 series has at least one missing calendar day** out of the expected range. In the global-model feature pipeline the gaps were left as-is (no forward-fill/interpolation of missing sales rows); lag/rolling features are row-based, so they are offset by one calendar day across each missing 25-Dec. ARIMA and the LSTM need a regular daily grid, so for those two the missing days are reindexed and filled with 0.
+- **Hyperparameter tuning (Experiment 8) did not outperform the untuned XGBoost (Experiment 5)** (WAPE 14.26% vs. 12.79% on the full test set) — a reminder that a tuned model isn't automatically the better choice, and that the final-model selection logic in Analyze picks by actual WAPE rather than assuming the more-tuned model wins.
+- **ARIMA, Prophet, and the LSTM were only fit/validated on a sample of series** (5 for the classical models, 50 for the LSTM) rather than the full ~1,782 — a fair comparison at full scale would need to run all of them across every series, out of scope for a first pass given per-series fitting time. The LSTM additionally uses unscaled sales and a non-time-based validation split, and in the executed run it did not train successfully (WAPE 90.38%, bias −90.38%), so it is excluded from the conclusions rather than read as a verdict on deep-learning models.
+- **Forecast horizon.** The lag/rolling features use actuals through the previous day, so the naive, Random Forest, XGBoost and LSTM results are one-day-ahead forecasts, not 15-day-ahead. ARIMA and Prophet forecast the whole window from one origin (multi-step), so their scores are not like-for-like with the others.
+- **Selection on the test window.** The final model is chosen on the same 15-day window it is reported on (the validation window is unused for selection), so the headline figure is slightly optimistic.
 - **Only National-level holidays were applied uniformly** to every store; Regional/Local holidays (which need matching each store's city/state) were left out of the holiday flag.
-- **MAPE is unreliable on the many zero-sales days here** — WAPE and bias are reported alongside it for exactly that reason.
+- **MAPE is unreliable here** — zero-actual rows are excluded from it and low-volume series with small nonzero actuals inflate it — so WAPE and bias are reported alongside it.
 - **The dataset ends in 2017** and reflects Ecuador-specific holidays and an oil-dependent economy; conclusions about which features matter most may not transfer to a different country or retailer without re-validation.
 - **The Streamlit demo asks the user to enter lag/rolling sales figures directly** rather than looking them up from a live per-series history store, since no such store exists outside the training notebook — a known, documented simplification (Section 19) rather than a silent gap.

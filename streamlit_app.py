@@ -64,8 +64,8 @@ with st.form("forecast_form"):
 
     with col2:
         forecast_date = st.date_input("Forecast date", value=dt.date.today())
-        transactions = st.number_input(
-            "Recent daily transaction count for this store", min_value=0.0, value=1500.0, step=50.0
+        transactions_lag_1 = st.number_input(
+            "Store's transaction count yesterday", min_value=0.0, value=1500.0, step=50.0
         )
 
     st.subheader("Recent sales history for this store × family")
@@ -132,32 +132,55 @@ if submitted:
         "month": month,
         "day": day,
         "is_weekend": is_weekend,
-        "transactions": transactions,
+        "transactions_lag_1": transactions_lag_1,
         f"family_{family}": 1,
         f"store_type_{store_type}": 1,
     }
+
+    # Guard: every non-dummy feature the model expects must be supplied by this form. If the saved
+    # artifacts come from a different feature set (e.g. an older run, or the oil-price model),
+    # stop instead of silently feeding zeros.
+    unsupplied = [
+        c for c in feature_cols
+        if c not in row and not c.startswith(("family_", "store_type_"))
+    ]
+    if unsupplied:
+        st.error(
+            "The saved model expects features this form doesn't collect: "
+            f"{', '.join(unsupplied)}. Re-run `retail-demand-forecasting.ipynb` to regenerate "
+            "`models/final_model.joblib` and `models/feature_cols.joblib`."
+        )
+        st.stop()
 
     # Build the row in the exact column order the model was trained on,
     # filling anything the notebook's feature set has but this form doesn't
     # (every other family_* / store_type_* dummy column stays 0).
     input_df = pd.DataFrame([{col: row.get(col, 0) for col in feature_cols}])
 
-    forecast = float(model.predict(input_df)[0])
-    recent_avg = (rolling_mean_7 + rolling_mean_28) / 2
+    # Sales can't be negative.
+    forecast = max(0.0, float(model.predict(input_df)[0]))
+
+    # Compare against the same weekday's recent sales (lags 7/14/28 are all the same weekday),
+    # so weekend forecasts aren't flagged as "above average" just because weekends sell more.
+    same_weekday_avg = (sales_lag_7 + sales_lag_14 + sales_lag_28) / 3
+    if same_weekday_avg > 0:
+        reference, reference_label = same_weekday_avg, "same-weekday average (last 3 weeks)"
+    else:
+        reference, reference_label = (rolling_mean_7 + rolling_mean_28) / 2, "recent average"
 
     st.divider()
     st.metric(
         "Forecasted units sold",
         f"{forecast:,.1f}",
-        delta=f"{forecast - recent_avg:+.1f} vs. recent average",
+        delta=f"{forecast - reference:+.1f} vs. {reference_label}",
     )
 
-    if forecast > recent_avg * 1.2:
-        st.success("📈 Forecast is notably above recent average — consider extra stock.")
-    elif forecast < recent_avg * 0.8:
-        st.warning("📉 Forecast is notably below recent average — consider reducing stock.")
+    if forecast > reference * 1.2:
+        st.success(f"📈 Forecast is notably above the {reference_label} — consider extra stock.")
+    elif forecast < reference * 0.8:
+        st.warning(f"📉 Forecast is notably below the {reference_label} — consider reducing stock.")
     else:
-        st.info("➡️ Forecast is in line with recent average sales.")
+        st.info(f"➡️ Forecast is in line with the {reference_label}.")
 
     with st.expander("Engineered features sent to the model"):
         st.dataframe(input_df.T.rename(columns={0: "value"}))
