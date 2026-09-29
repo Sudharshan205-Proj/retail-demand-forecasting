@@ -1,11 +1,8 @@
 # --- Virtual environment ---
 .venv/
-venv/
 
 # --- Secrets ---
 .kaggle/
-.env
-.env.*
 .streamlit/secrets.toml
 
 # --- Data ---
@@ -22,7 +19,6 @@ __pycache__/
 
 # --- Editors ---
 .vscode/
-.idea/
 
 # --- Logs ---
 *.log

@@ -10,9 +10,9 @@
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.64-FF4B4B?logo=streamlit&logoColor=white)
 ![Status](https://img.shields.io/badge/status-complete-brightgreen)
 
-A demand-forecasting pipeline built on [Store Sales — Time Series Forecasting](https://www.kaggle.com/competitions/store-sales-time-series-forecasting), a ~3-million-row multi-series retail dataset from Corporación Favorita, a 54-store Ecuadorian grocery chain. Nine modeling experiments — naive baselines, per-series classical models (ARIMA, Prophet), and global machine-learning/deep-learning models trained across all ~1,782 store × product-family series at once — are compared head-to-head on the same held-out 15-day window, and the winner is picked fairly rather than assumed.
+A demand-forecasting pipeline built on [Store Sales — Time Series Forecasting](https://www.kaggle.com/competitions/store-sales-time-series-forecasting), a ~3-million-row multi-series retail dataset from Corporación Favorita, a 54-store Ecuadorian grocery chain. Nine modeling experiments — naive baselines, per-series classical models (ARIMA, Prophet), global machine-learning models across all 1,782 series, and an LSTM benchmark on 50 series — are compared on a held-out 15-day window, with deployable models selected by validation WAPE.
 
-**Headline result**: the final model forecasts daily unit sales **one day ahead** across all 1,782 store × family series over a 15-day held-out window with a **WAPE of 12.79%** and **RMSE of 196.54**. The naive baseline (yesterday's value), scored on the same full test set, reaches a WAPE of **23.30%**, and the model beats it on RMSE for **28 of 33 product families (84.8%)** — both Ask-phase success criteria are met.
+**Headline result**: the final model forecasts daily unit sales **one day ahead** across all 1,782 store × family series over a 15-day held-out window with a **WAPE of 12.93%** and **RMSE of 198.28**. The naive baseline (yesterday's value), scored on the same full test set, reaches a WAPE of **23.30%**, and the model beats it on RMSE for **28 of 33 product families (84.8%)** — both Ask-phase success criteria are met.
 
 ---
 
@@ -55,7 +55,7 @@ That is the original brief for this internship project. Everything else in this 
 | **Dataset** | Store Sales (Corporación Favorita), 3,000,888 training rows, 1,782 store × family series across 54 stores and 33 product families |
 | **Approach** | 9-experiment comparison matrix (naive, ARIMA, Prophet, Random Forest, XGBoost ×2, tuned XGBoost, LSTM) + fair WAPE-optimized selection among deployable global models |
 | **Final model** | XGBoost (global, untuned) — `n_estimators=400, max_depth=8, learning_rate=0.05` |
-| **Result** | RMSE = 196.54 · **WAPE = 12.79%** · Bias = +2.77% (full test set, 26,730 rows) |
+| **Result** | RMSE = 198.28 · **WAPE = 12.93%** · Bias = +2.98% (full test set, 26,730 rows) |
 | **Full write-up** | [`retail_demand_forecasting_report.md`](./retail_demand_forecasting_report.md) |
 
 ---
@@ -182,7 +182,7 @@ flowchart TD
         C1(["Naive & seasonal-naive<br/>baseline"])
         C2(["Classical track<br/>ARIMA + Prophet, 5 series"])
         C3(["Global ML track: Random Forest<br/>& XGBoost (± oil)"])
-        C4(["LSTM track<br/>store/family embeddings"])
+        C4(["LSTM benchmark<br/>scaled covariate sequences + embeddings"])
         C5(["Rolling-origin tuning +<br/>fair final selection"])
         C1 --> C2 --> C3 --> C4 --> C5
     end
@@ -253,7 +253,7 @@ flowchart TD
     subgraph GLOBAL["🟠 Global Track — one model across series (RF/XGBoost: all 1,782 · LSTM: 50-series sample)"]
         V2["Random Forest"]
         V3["XGBoost<br/>(± oil price)"]
-        V4["LSTM<br/>store/family embeddings, 50-series sample"]
+        V4["LSTM<br/>scaled covariate sequences + embeddings,<br/>50-series sample"]
     end
 
     SPLIT ==> U1
@@ -302,8 +302,8 @@ flowchart TD
 
 **Key design choices baked into this workflow:**
 - The split is **chronological, never a random shuffle** — training only ever sees dates before validation/test, which is what makes lag/rolling features and the reported metrics trustworthy for a real forecasting deployment.
-- ARIMA and Prophet satisfy the guideline's named classical techniques directly, fit on the **top 5 highest-volume series**; the global tree-based/LSTM tracks are the practical way to cover all ~1,782 series at once, matching how all four reference project videos approach this problem.
-- The final model is chosen from **only the models with full-test-set predictions to actually deploy** — the representative-series-only classical/deep-learning experiments are compared for context but aren't candidates for the final artifact, since there's no global model behind them to save.
+- ARIMA and Prophet satisfy the guideline's named classical techniques directly, fit on the **top 5 highest-volume series**; the global tree-based models cover all ~1,782 series, while the LSTM is a time-validated 50-series benchmark kept within internship scope.
+- The final model is chosen from **only the deployable models with full-series predictions** — the representative-series-only classical/deep-learning experiments are compared for context but aren't candidates for the final artifact, since there's no global model behind them to save. Those deployable candidates are ranked by validation WAPE before the separate test evaluation.
 
 ---
 
@@ -319,7 +319,7 @@ flowchart TD
 | 4 | Random Forest | Global machine learning (bagged trees) | All 1,782 series | `scikit-learn` |
 | 5 | XGBoost | Global machine learning (boosted trees) | All 1,782 series | `xgboost` |
 | 6 | XGBoost + oil price | Global machine learning | All 1,782 series | `xgboost` |
-| 7 | LSTM *(failed to train — excluded from conclusions)* | Deep learning, store/family embeddings | 50-series sample | `tensorflow` / `keras` |
+| 7 | LSTM | Deep learning, scaled covariate sequences + store/family embeddings | 50-series sample | `tensorflow` / `keras` |
 | 8 | XGBoost (tuned) | Global machine learning + `RandomizedSearchCV` | All 1,782 series | `xgboost` + `scikit-learn` |
 
 ### Evaluation Metrics
@@ -368,7 +368,7 @@ MAPE is reported for every experiment (per the guideline) but was **not** used t
 | **Persistence** | `joblib` |
 | **Version control** | Git + GitHub |
 
-The full pinned environment is in [`requirements-dev.txt`](./requirements-dev.txt); the slim set the Streamlit demo needs is in [`requirements.txt`](./requirements.txt).
+The pinned project environment is in [`requirements.txt`](./requirements.txt), generated from the working environment with `pip freeze`.
 
 ---
 
@@ -410,8 +410,7 @@ retail-demand-forecasting/
 ├── retail_demand_forecasting_report.md # In-depth written report (problem → data → methods → results → recs)
 ├── README.md                          # You are here
 ├── streamlit_app.py                   # Optional interactive demo — live sales forecast
-├── requirements.txt                   # Slim pinned dependencies for the Streamlit demo (what Streamlit Cloud installs)
-├── requirements-dev.txt               # Full pinned environment for the notebook (pip freeze)
+├── requirements.txt                   # Pinned project environment (pip freeze)
 ├── .gitignore
 ├── .streamlit/                        # Streamlit config (config.toml)
 ├── assets/                            # 18 result figures used by the report/README (tracked)
@@ -430,9 +429,9 @@ retail-demand-forecasting/
    source .venv/bin/activate
    ```
 
-2. **Install dependencies** — the notebook needs the full pinned environment; `requirements.txt` alone is enough for the Streamlit demo
+2. **Install dependencies**
    ```bash
-   pip install -r requirements-dev.txt
+   pip install -r requirements.txt
    ```
 
 3. **Get the dataset** — download the Store Sales dataset via the Kaggle competition CLI (requires a `kaggle.json` API token in `~/.kaggle/`, or set the `KAGGLE_CONFIG_DIR` environment variable to this repo's `.kaggle/` folder):
@@ -465,31 +464,33 @@ Pick a product family, store type, and cluster, enter recent sales history and p
 | 1b. Seasonal-naive (same weekday last week) | 2,503.25 | 21.75% | 21.14% | +8.66% |
 | 2. ARIMA (SARIMAX, weekly seasonal) | 2,348.80 | 19.40% | 18.83% | +12.71% |
 | 3. Prophet (holiday + promo regressors) | 2,031.17 | 17.07% | 16.49% | +9.56% |
-| 4. Random Forest (global) | 1,621.30 | 12.27% | 12.15% | +9.07% |
-| **5. XGBoost (global, untuned)** ⭐ | **868.18** | **6.90%** | **6.83%** | +0.97% |
-| 6. XGBoost + oil price | 1,232.70 | 9.33% | 9.31% | +5.03% |
-| 7. LSTM (50-series sample, scored on the 5 series) — *failed to train* | 9,105.87 | 90.00% | 90.38% | −90.38% |
-| 8. XGBoost (tuned, global) | 1,112.94 | 8.53% | 8.36% | +4.49% |
+| 4. Random Forest (global) | 1,596.41 | 12.32% | 12.26% | +9.31% |
+| **5. XGBoost (global, untuned)** ⭐ | **857.10** | **7.05%** | **6.86%** | +2.24% |
+| 6. XGBoost + oil price | 1,301.33 | 9.70% | 9.77% | +5.65% |
+| 7. LSTM (50-series sample, scored on the 5 series) | 1,518.11 | 11.87% | 12.31% | +4.94% |
+| 8. XGBoost (tuned, global) | 1,120.32 | 8.76% | 8.62% | +3.77% |
 
-> **Experiment 7 (LSTM) did not train successfully. It scores WAPE 90.38% with bias −90.38% on the 5 series (82.09% / −79.61% on its full 50-series sample), i.e. it predicts only about a tenth of actual sales. Sales were fed to the network unscaled, early stopping restored the epoch-1 weights (validation loss was best at epoch 1, 28,735, and had risen to 199,299 by epoch 4), and the validation split is not time-based. The row is kept for transparency but excluded from every conclusion.**
+> **Experiment 7 (LSTM) is a valid sampled benchmark, not a deployable candidate.** It uses 28-day sequences of training-only scaled sales and promotions, calendar/holiday inputs, store/family embeddings, Huber loss, and explicit chronological validation. It scores RMSE **1,518.11**, MAPE **11.87%**, WAPE **12.31%**, and bias **+4.94%** on the 5 series; its full 50-series reference result is RMSE **502.52**, MAPE **31.69%**, WAPE **12.91%**, and bias **+3.47%**. It outperforms naive, ARIMA, and Prophet on the representative-series comparison, but is not eligible for final-model selection because it was not evaluated across all 1,782 series.
 
 **Full test set — deployable global models** (26,730 rows)
 
+The deployable candidates were selected before this evaluation using validation WAPE; untuned XGBoost ranked first at **11.56%** (versus 11.78% for Random Forest, 11.80% with oil, and 11.84% for tuned XGBoost).
+
 | Experiment | RMSE | WAPE | Bias |
 |---|---|---|---|
-| **5. XGBoost (global, untuned)** ⭐ | 196.54 | **12.79%** | +2.77% |
-| 6. XGBoost + oil price | 219.80 | 14.08% | +4.79% |
-| 8. XGBoost (tuned, global) | 216.05 | 14.26% | +4.64% |
-| 4. Random Forest (global) | 239.00 | 15.20% | +4.86% |
+| **5. XGBoost (global, untuned)** ⭐ | 198.28 | **12.93%** | +2.98% |
+| 8. XGBoost (tuned, global) | 214.75 | 14.25% | +4.31% |
+| 6. XGBoost + oil price | 223.05 | 14.34% | +5.27% |
+| 4. Random Forest (global) | 238.52 | 15.31% | +5.09% |
 
-The oil-price and tuned variants are within 0.2 percentage points of each other on WAPE (14.08% vs. 14.26%) and swap order on RMSE (219.80 vs. 216.05), so they should not be ranked against each other; both clearly trail the untuned, no-oil model. The untuned XGBoost also has the lowest WAPE in the 5-series table, so it leads both comparisons.
+The tuned and oil-price variants are close on full-test WAPE (14.25% vs. 14.34%); both clearly trail the untuned, no-oil model. The untuned XGBoost also has the lowest WAPE in the 5-series table and validation ranking, so it leads all three comparisons.
 
 **Success-criteria check (full test set)**
 
 | Criterion | Result |
 |---|---|
-| Company-wide WAPE ≤ 15% | **PASS** — 12.79% |
-| Naive (yesterday's value) WAPE on the same full test set | 23.30% (selected model: 12.79%) |
+| Company-wide WAPE ≤ 15% | **PASS** — 12.93% |
+| Naive (yesterday's value) WAPE on the same full test set | 23.30% (selected model: 12.93%) |
 | Families where model RMSE < naive RMSE (target ≥ 80%) | **PASS** — 28 of 33 (84.8%) |
 
 The families where the model does not beat naive on RMSE are SCHOOL AND OFFICE SUPPLIES, GROCERY II, BABY CARE, HOME APPLIANCES and BOOKS — the five families where the naive forecast still has the lower RMSE.
@@ -500,16 +501,16 @@ The families where the model does not beat naive on RMSE are SCHOOL AND OFFICE S
 
 ## Key Findings
 
-- **Every one of the 1,782 store × family series has at least one missing calendar day** (mean 4 of 1,688 expected days) — gaps were left as-is rather than assumed to be zero-sales days.
+- **Every one of the 1,782 store × family series has four missing 25-Dec dates.** The feature pipeline restores these known closure dates with zero sales and promotions before creating calendar lags and rolling windows.
 - **31.1% of the full date range is missing an oil price** — interpolated/forward-filled before use, since Ecuador's oil-dependent economy makes this a meaningful (if weak, at the series level) exogenous signal.
-- **Global tree-based models scored far better than the per-series classical models.** On the same 5 series, untuned global XGBoost reaches WAPE 6.83% (RMSE 868) versus 18.83% for ARIMA, 16.49% for Prophet and 15.77% for the naive baseline; on the full test set it roughly halves naive's WAPE (12.79% vs. 23.30%). The likely driver is that their lag/rolling features use recent actuals through the previous day, which ARIMA/Prophet's single-origin multi-step forecasts do not — so the classical rows are not like-for-like.
-- **Hyperparameter tuning did not improve the final model.** Tuned XGBoost scores WAPE 14.26% vs. 12.79% untuned on the full test set (8.36% vs. 6.83% on the 5 series). This held after the CV folds were corrected to split by date, and the search picked the same hyperparameters as before. The RMSE-vs-WAPE objective mismatch is one possible reason, not a demonstrated cause.
-- **Oil price as a feature hurt XGBoost's WAPE** (14.08% vs. 12.79% without it on the full test set; 9.31% vs. 6.83% on the 5 series) — consistent with the project plan's expectation that oil is a weak, indirect signal at the individual store × family level. The oil-price and tuned variants are effectively tied with each other (14.08% vs. 14.26% WAPE, opposite order on RMSE); both trail the untuned, no-oil model.
-- **The LSTM experiment failed to train** (WAPE 90.38%, bias −90.38% on the 5 series) and is excluded from the conclusions; no claim is made about how a properly scaled LSTM would perform.
+- **Global tree-based models scored far better than the per-series classical models.** On the same 5 series, untuned global XGBoost reaches WAPE 6.86% (RMSE 857) versus 18.83% for ARIMA, 16.49% for Prophet and 15.77% for the naive baseline; on the full test set it improves on naive's WAPE (12.93% vs. 23.30%). The likely driver is that their lag/rolling features use recent actuals through the previous day, which ARIMA/Prophet's single-origin multi-step forecasts do not — so the classical rows are not like-for-like.
+- **Hyperparameter tuning did not improve the final model.** Tuned XGBoost scores WAPE 14.25% vs. 12.93% untuned on the full test set (8.62% vs. 6.86% on the 5 series). The date-based CV search selected `n_estimators=300`, `max_depth=6`, `learning_rate=0.05`, `subsample=0.9`, and `colsample_bytree=0.7`; RMSE-vs-WAPE objective mismatch is one possible reason it did not generalize better.
+- **Oil price as a feature hurt XGBoost's WAPE** (14.34% vs. 12.93% without it on the full test set; 9.77% vs. 6.86% on the 5 series) — consistent with oil being a weak, indirect signal at the individual store × family level.
+- **The corrected LSTM is a credible sampled benchmark.** On the five representative series it reaches WAPE 12.31% with +4.94% bias, outperforming naive, ARIMA, and Prophet. It remains outside final-model selection because its 50-series scope is not comparable with the all-series deployable models.
 
 ## Limitations
 
-Sales here are realized sales, not true demand (stockouts can under-report demand); forecasts are one-day-ahead (lag/rolling features use actuals through the previous day), not 15-day-ahead, and ARIMA/Prophet forecast multi-step from one origin, so they aren't like-for-like with the other models; the final model is selected on the same 15-day test window it is reported on, so the headline figure is slightly optimistic; only National-level holidays were applied uniformly, leaving out Regional/Local holidays; ARIMA, Prophet, and the LSTM were validated only on a sample of series (5 and 50, respectively) rather than the full 1,782, and the LSTM failed to train usefully (WAPE ≈ 90%; unscaled sales and a non-time-based validation split) so it is excluded from the conclusions; and the dataset ends in 2017 and reflects Ecuador-specific seasonality and an oil-dependent economy. Full discussion, including why MAPE is reported but not used to select the winner, is in the report.
+Sales here are realized sales, not true demand (stockouts can under-report demand); forecasts are one-day-ahead (lag/rolling features use actuals through the previous day), not 15-day-ahead, and ARIMA/Prophet forecast multi-step from one origin, so they aren't like-for-like with the other models; deployable global candidates are selected by validation WAPE and the separate 15-day test window is reserved for final evaluation; only National-level holidays were applied uniformly, leaving out Regional/Local holidays; ARIMA, Prophet, and the LSTM were validated only on a sample of series (5 and 50, respectively) rather than the full 1,782, so the sampled models are not candidates for the final artifact; and the dataset ends in 2017 and reflects Ecuador-specific seasonality and an oil-dependent economy. Full discussion, including why MAPE is reported but not used to select the winner, is in the report.
 
 ## Dataset & Citation
 

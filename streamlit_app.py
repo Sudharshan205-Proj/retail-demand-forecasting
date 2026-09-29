@@ -106,11 +106,6 @@ with st.form("forecast_form"):
     submitted = st.form_submit_button("Forecast sales")
 
 if submitted:
-    # Re-derive exactly the same engineered features the notebook computes,
-    # from the recent-history and calendar fields a user can plausibly supply
-    # for a single store x family x date forecast. Cluster and store type are
-    # taken directly from the form rather than looked up from stores.csv, so
-    # this demo needs no local copy of the dataset to run.
     dayofweek = forecast_date.weekday()
     month = forecast_date.month
     day = forecast_date.day
@@ -137,9 +132,6 @@ if submitted:
         f"store_type_{store_type}": 1,
     }
 
-    # Guard: every non-dummy feature the model expects must be supplied by this form. If the saved
-    # artifacts come from a different feature set (e.g. an older run, or the oil-price model),
-    # stop instead of silently feeding zeros.
     unsupplied = [
         c for c in feature_cols
         if c not in row and not c.startswith(("family_", "store_type_"))
@@ -152,16 +144,10 @@ if submitted:
         )
         st.stop()
 
-    # Build the row in the exact column order the model was trained on,
-    # filling anything the notebook's feature set has but this form doesn't
-    # (every other family_* / store_type_* dummy column stays 0).
     input_df = pd.DataFrame([{col: row.get(col, 0) for col in feature_cols}])
 
-    # Sales can't be negative.
     forecast = max(0.0, float(model.predict(input_df)[0]))
 
-    # Compare against the same weekday's recent sales (lags 7/14/28 are all the same weekday),
-    # so weekend forecasts aren't flagged as "above average" just because weekends sell more.
     same_weekday_avg = (sales_lag_7 + sales_lag_14 + sales_lag_28) / 3
     if same_weekday_avg > 0:
         reference, reference_label = same_weekday_avg, "same-weekday average (last 3 weeks)"
